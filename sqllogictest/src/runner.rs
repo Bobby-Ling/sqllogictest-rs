@@ -629,6 +629,8 @@ pub struct Runner<D: AsyncDB, M: MakeConnection<Conn = D>> {
     labels: HashSet<String>,
     /// Local variables/context for the runner.
     locals: RunnerLocals,
+    /// Whether to continue running after statement failures
+    continue_on_error: bool,
 }
 
 impl<D: AsyncDB, M: MakeConnection<Conn = D>> Runner<D, M> {
@@ -648,6 +650,7 @@ impl<D: AsyncDB, M: MakeConnection<Conn = D>> Runner<D, M> {
             labels: HashSet::new(),
             conn: Connections::new(make_conn),
             locals: RunnerLocals::default(),
+            continue_on_error: true,
         }
     }
 
@@ -681,6 +684,11 @@ impl<D: AsyncDB, M: MakeConnection<Conn = D>> Runner<D, M> {
 
     pub fn with_hash_threshold(&mut self, hash_threshold: usize) {
         self.hash_threshold = hash_threshold;
+    }
+
+    /// Set whether to continue running after statement failures
+    pub fn with_continue_on_error(&mut self, continue_on_error: bool) {
+        self.continue_on_error = continue_on_error;
     }
 
     pub async fn apply_record(
@@ -1274,7 +1282,16 @@ impl<D: AsyncDB, M: MakeConnection<Conn = D>> Runner<D, M> {
             if let Record::Halt { .. } = record {
                 break;
             }
-            self.run_async(record).await?;
+
+            if self.continue_on_error {
+                if let Err(e) = self.run_async(record).await {
+                    // Log the error but continue
+                    eprintln!("Error (continuing): {}", e);
+                    continue;
+                }
+            } else {
+                self.run_async(record).await?;
+            }
         }
         Ok(())
     }
@@ -1385,6 +1402,7 @@ impl<D: AsyncDB, M: MakeConnection<Conn = D>> Runner<D, M> {
                 hash_threshold: self.hash_threshold,
                 labels: self.labels.clone(),
                 locals,
+                continue_on_error: self.continue_on_error,
             };
 
             tasks.push(async move {
