@@ -482,6 +482,29 @@ pub fn default_normalizer(s: &String) -> String {
 pub type Validator =
     fn(normalizer: Normalizer, actual: &[Vec<String>], expected: &[String]) -> bool;
 
+/// Validator specifically for TextWise mode that compares raw text without normalization
+pub fn textwise_validator(
+    _normalizer: Normalizer,
+    actual: &[Vec<String>],
+    expected: &[String],
+) -> bool {
+    // For TextWise mode, we compare the raw text directly without any normalization
+    let actual_rows: Vec<String> = actual
+        .iter()
+        .map(|strs| {
+            if strs.len() == 1 {
+                // For single-column output (like query plans), use the raw string directly
+                strs[0].clone()
+            } else {
+                // For multi-column output, join with spaces
+                strs.join(" ")
+            }
+        })
+        .collect();
+
+    actual_rows == expected
+}
+
 pub fn default_validator(
     normalizer: Normalizer,
     actual: &[Vec<String>],
@@ -1200,11 +1223,18 @@ impl<D: AsyncDB, M: MakeConnection<Conn = D>> Runner<D, M> {
                                 .flat_map(|strs| strs.iter())
                                 .map(|str| vec![str.to_string()])
                                 .collect_vec(),
+                            Some(ResultMode::TextWise) => rows.clone(),
                             // default to rowwise
                             _ => rows.clone(),
                         };
 
-                        if !(self.validator)(self.normalizer, &actual_results, &expected_results) {
+                        // Use different validator for TextWise mode
+                        let validation_result = match self.result_mode {
+                            Some(ResultMode::TextWise) => textwise_validator(self.normalizer, &actual_results, &expected_results),
+                            _ => (self.validator)(self.normalizer, &actual_results, &expected_results),
+                        };
+
+                        if !validation_result {
                             let output_rows =
                                 rows.iter().map(|strs| strs.iter().join(" ")).collect_vec();
                             return Err(TestErrorKind::QueryResultMismatch {

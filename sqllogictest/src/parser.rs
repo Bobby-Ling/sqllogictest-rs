@@ -626,6 +626,8 @@ pub enum ResultMode {
     RowWise,
     /// Results are in markdown table format
     TableWise,
+    /// Results are compared as raw text without any normalization (preserves whitespace and indentation)
+    TextWise,
 }
 
 impl ControlItem for ResultMode {
@@ -634,6 +636,7 @@ impl ControlItem for ResultMode {
             "rowwise" => Ok(Self::RowWise),
             "valuewise" => Ok(Self::ValueWise),
             "tablewise" => Ok(Self::TableWise),
+            "textwise" => Ok(Self::TextWise),
             _ => Err(ParseErrorKind::InvalidSortMode(s.to_string())),
         }
     }
@@ -643,6 +646,7 @@ impl ControlItem for ResultMode {
             Self::RowWise => "rowwise",
             Self::ValueWise => "valuewise",
             Self::TableWise => "tablewise",
+            Self::TextWise => "textwise",
         }
     }
 }
