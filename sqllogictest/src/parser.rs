@@ -261,12 +261,16 @@ impl<T: ColumnType> std::fmt::Display for Record<T> {
                     QueryExpect::Results {
                         types,
                         sort_mode,
+                        result_mode,
                         label,
                         ..
                     } => {
                         write!(f, "{}", types.iter().map(|c| c.to_char()).join(""))?;
                         if let Some(sort_mode) = sort_mode {
                             write!(f, " {}", sort_mode.as_str())?;
+                        }
+                        if let Some(result_mode) = result_mode {
+                            write!(f, " {}", result_mode.as_str())?;
                         }
                         if let Some(label) = label {
                             write!(f, " {label}")?;
@@ -286,10 +290,31 @@ impl<T: ColumnType> std::fmt::Display for Record<T> {
                 writeln!(f, "{sql}")?;
 
                 match expected {
-                    QueryExpect::Results { results, .. } => {
+                    QueryExpect::Results { results, result_mode, .. } => {
                         write!(f, "{}", RESULTS_DELIMITER)?;
-                        for result in results {
-                            write!(f, "\n{result}")?;
+
+                        // If result_mode is TableWise, convert space-separated format back to table format
+                        if matches!(result_mode, Some(ResultMode::TableWise)) {
+                            // Assume the first result contains the header data
+                            if !results.is_empty() {
+                                // For table output, we need to determine column structure
+                                // Since results are stored as space-separated, we convert them back to table format
+                                for (i, result) in results.iter().enumerate() {
+                                    let cols: Vec<&str> = result.split_whitespace().collect();
+                                    write!(f, "\n| {} |", cols.join(" | "))?;
+
+                                    // Add separator after first row (header)
+                                    if i == 0 && results.len() > 1 {
+                                        let separator = cols.iter().map(|_| "---").collect::<Vec<_>>().join(" | ");
+                                        write!(f, "\n| {} |", separator)?;
+                                    }
+                                }
+                            }
+                        } else {
+                            // Default behavior for other result modes
+                            for result in results {
+                                write!(f, "\n{result}")?;
+                            }
                         }
 
                         // query always ends with a blank line
@@ -599,6 +624,8 @@ pub enum ResultMode {
     ValueWise,
     /// The default option where results are in columns separated by spaces
     RowWise,
+    /// Results are in markdown table format
+    TableWise,
 }
 
 impl ControlItem for ResultMode {
@@ -606,6 +633,7 @@ impl ControlItem for ResultMode {
         match s {
             "rowwise" => Ok(Self::RowWise),
             "valuewise" => Ok(Self::ValueWise),
+            "tablewise" => Ok(Self::TableWise),
             _ => Err(ParseErrorKind::InvalidSortMode(s.to_string())),
         }
     }
@@ -614,6 +642,7 @@ impl ControlItem for ResultMode {
         match self {
             Self::RowWise => "rowwise",
             Self::ValueWise => "valuewise",
+            Self::TableWise => "tablewise",
         }
     }
 }
@@ -882,12 +911,32 @@ fn parse_inner<T: ColumnType>(loc: &Location, script: &str) -> Result<Vec<Record
                     match &mut expected {
                         // Lines following the "----" are expected results of the query, one value
                         // per line.
-                        QueryExpect::Results { results, .. } => {
-                            for (_, line) in &mut lines {
-                                if line.is_empty() {
-                                    break;
+                        QueryExpect::Results { results, result_mode, .. } => {
+                            // Check if the first line indicates table format
+                            if let Some((_, first_line)) = lines.peek() {
+                                if is_table_format(first_line) {
+                                    // Automatically set result_mode to TableWise if not already set
+                                    if result_mode.is_none() {
+                                        *result_mode = Some(ResultMode::TableWise);
+                                    }
+                                    *results = parse_table_results(&mut lines);
+                                } else {
+                                    // Default behavior: parse line by line
+                                    for (_, line) in &mut lines {
+                                        if line.is_empty() {
+                                            break;
+                                        }
+                                        results.push(line.to_string());
+                                    }
                                 }
-                                results.push(line.to_string());
+                            } else {
+                                // No lines, empty results
+                                for (_, line) in &mut lines {
+                                    if line.is_empty() {
+                                        break;
+                                    }
+                                    results.push(line.to_string());
+                                }
                             }
                         }
                         // If no inline error message is specified, it might be a multiline error.
@@ -1060,6 +1109,57 @@ fn parse_multiline_error<'a>(
     lines: &mut Peekable<impl Iterator<Item = (usize, &'a str)>>,
 ) -> ExpectedError {
     ExpectedError::Multiline(parse_multiple_result(lines))
+}
+
+/// Parse table format results under `----`.
+/// Table format:
+/// | col1 | col2 | col3 |
+/// | val1 | val2 | val3 |
+/// | val4 | val5 | val6 |
+fn parse_table_results<'a>(
+    lines: &mut Peekable<impl Iterator<Item = (usize, &'a str)>>,
+) -> Vec<String> {
+    let mut results = Vec::new();
+    let mut first_data_row = true;
+
+    while let Some((_, line)) = lines.peek() {
+        if line.is_empty() {
+            break;
+        }
+
+        let line = lines.next().unwrap().1;
+        let trimmed = line.trim();
+
+        // Parse table row
+        if trimmed.starts_with('|') && trimmed.ends_with('|') {
+            // Skip the header separator line (e.g., "|---|---|---|")
+            if trimmed.chars().all(|c| c == '|' || c == '-' || c.is_whitespace()) {
+                continue;
+            }
+
+            let row_data: Vec<String> = trimmed[1..trimmed.len()-1]
+                .split('|')
+                .map(|cell| cell.trim().to_string())
+                .collect();
+
+            // Skip the first row (header) in table format, we only want data rows
+            if first_data_row {
+                first_data_row = false;
+                continue;
+            }
+
+            // Convert row to space-separated format for compatibility with existing logic
+            results.push(row_data.join(" "));
+        }
+    }
+
+    results
+}
+
+/// Detect if the results are in table format by checking the first line
+fn is_table_format(first_line: &str) -> bool {
+    let trimmed = first_line.trim();
+    trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.matches('|').count() >= 2
 }
 
 /// Parse retry configuration from tokens
