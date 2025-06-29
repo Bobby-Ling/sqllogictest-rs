@@ -124,7 +124,7 @@ impl Rmdb {
             let trimmed = line.trim();
 
             // 跳过空行
-            if trimmed.is_empty() {
+            if trimmed.is_empty() || trimmed == "\0"{
                 continue;
             }
 
@@ -153,6 +153,17 @@ impl Rmdb {
             } else if in_table {
                 // 表格结束
                 break;
+            } else {
+                // 检查是否是explain或其他非表格格式的查询结果
+                // 对于explain这样的输出，每行就是一个结果行
+                if !trimmed.is_empty()
+                    && !trimmed.contains("error")
+                    && !trimmed.contains("failed")
+                    && !trimmed.contains("rows affected")
+                    && !trimmed.contains("row affected") {
+                    // 将每行作为单列输出处理
+                    rows.push(vec![line.replace("\t", "    ").to_string()]);
+                }
             }
         }
 
