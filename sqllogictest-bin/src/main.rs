@@ -271,6 +271,7 @@ pub async fn main() -> Result<()> {
                 bail!("`--external-engine-command-template` is required for `--engine=external`")
             }
         }
+        EngineType::Rmdb => EngineConfig::Rmdb,
     };
 
     match color {

@@ -7,6 +7,7 @@ use sqllogictest::{AsyncDB, DBOutput, DefaultColumnType};
 use sqllogictest_engines::external::ExternalDriver;
 use sqllogictest_engines::mysql::{MySql, MySqlConfig};
 use sqllogictest_engines::postgres::{PostgresConfig, PostgresExtended, PostgresSimple};
+use sqllogictest_engines::rmdb::{Rmdb, RmdbConfig};
 use tokio::process::Command;
 
 use super::{DBConfig, Result};
@@ -17,6 +18,7 @@ pub enum EngineType {
     Postgres,
     PostgresExtended,
     External,
+    Rmdb,
 }
 
 #[derive(Clone, Debug)]
@@ -25,6 +27,7 @@ pub enum EngineConfig {
     Postgres,
     PostgresExtended,
     External(String),
+    Rmdb,
 }
 
 pub(crate) enum Engines {
@@ -32,6 +35,7 @@ pub(crate) enum Engines {
     Postgres(PostgresSimple),
     PostgresExtended(PostgresExtended),
     External(ExternalDriver),
+    Rmdb(Rmdb),
 }
 
 impl From<&DBConfig> for MySqlConfig {
@@ -62,6 +66,13 @@ impl From<&DBConfig> for PostgresConfig {
         }
 
         pg_config
+    }
+}
+
+impl From<&DBConfig> for RmdbConfig {
+    fn from(config: &DBConfig) -> Self {
+        let (host, port) = config.random_addr();
+        RmdbConfig::new(host.to_string(), port)
     }
 }
 
@@ -101,6 +112,11 @@ pub(crate) async fn connect(
                     .map_err(|e| EnginesError(e.into()))?,
             )
         }
+        EngineConfig::Rmdb => Engines::Rmdb(
+            Rmdb::connect(config.into())
+                .await
+                .map_err(|e| EnginesError(e.into()))?,
+        ),
     })
 }
 
@@ -126,6 +142,7 @@ macro_rules! dispatch_engines {
             Engines::Postgres($inner) => $body,
             Engines::PostgresExtended($inner) => $body,
             Engines::External($inner) => $body,
+            Engines::Rmdb($inner) => $body,
         }
     }};
 }
