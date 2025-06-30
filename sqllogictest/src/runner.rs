@@ -1233,6 +1233,7 @@ impl<D: AsyncDB, M: MakeConnection<Conn = D>> Runner<D, M> {
                         QueryExpect::Results {
                             types: expected_types,
                             results: expected_results,
+                            sort_mode,
                             ..
                         },
                     ) => {
@@ -1256,10 +1257,29 @@ impl<D: AsyncDB, M: MakeConnection<Conn = D>> Runner<D, M> {
                             _ => rows.clone(),
                         };
 
+                        // Apply the same sorting to expected results as was applied to actual results
+                        let mut sorted_expected_results = expected_results.clone();
+                        let effective_sort_mode = sort_mode.or(self.sort_mode);
+                        match effective_sort_mode {
+                            Some(SortMode::RowSort) => {
+                                sorted_expected_results.sort_unstable();
+                            }
+                            Some(SortMode::ValueSort) => {
+                                // For ValueSort, each value becomes a separate "row"
+                                let mut all_values: Vec<String> = sorted_expected_results
+                                    .iter()
+                                    .flat_map(|line| line.split_whitespace().map(|s| s.to_string()))
+                                    .collect();
+                                all_values.sort_unstable();
+                                sorted_expected_results = all_values;
+                            }
+                            _ => {} // NoSort or None - keep original order
+                        }
+
                         // Use different validator for TextWise mode
                         let validation_result = match self.result_mode {
-                            Some(ResultMode::TextWise) => textwise_validator(self.normalizer, &actual_results, &expected_results),
-                            _ => (self.validator)(self.normalizer, &actual_results, &expected_results),
+                            Some(ResultMode::TextWise) => textwise_validator(self.normalizer, &actual_results, &sorted_expected_results),
+                            _ => (self.validator)(self.normalizer, &actual_results, &sorted_expected_results),
                         };
 
                         if !validation_result {
@@ -1267,7 +1287,7 @@ impl<D: AsyncDB, M: MakeConnection<Conn = D>> Runner<D, M> {
                                 rows.iter().map(|strs| strs.iter().join(" ")).collect_vec();
                             return Err(TestErrorKind::QueryResultMismatch {
                                 sql,
-                                expected: expected_results.join("\n"),
+                                expected: sorted_expected_results.join("\n"),
                                 actual: output_rows.join("\n"),
                             }
                             .at(loc));
