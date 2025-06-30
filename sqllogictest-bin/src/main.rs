@@ -145,6 +145,10 @@ struct Opt {
     /// Enable step-by-step execution of SQL records. Pauses before each record for user confirmation.
     #[clap(long = "step-by-step", short)]
     step_by_step: bool,
+
+    /// Continue execution even if a record fails, instead of stopping at the first error.
+    #[clap(long, short)]
+    continue_on_error: bool,
 }
 
 /// Connection configuration.
@@ -257,6 +261,7 @@ pub async fn main() -> Result<()> {
         shutdown_timeout_secs,
         verbose,
         step_by_step,
+        continue_on_error,
     } = Opt::from_arg_matches(&matches)
         .map_err(|err| err.exit())
         .unwrap();
@@ -366,6 +371,7 @@ pub async fn main() -> Result<()> {
         shutdown_timeout: shutdown_timeout_secs.map(Duration::from_secs),
         verbose,
         step_by_step,
+        continue_on_error,
     };
 
     let result = if let Some(jobs) = jobs {
@@ -400,6 +406,7 @@ struct RunConfig {
     shutdown_timeout: Option<Duration>,
     verbose: bool,
     step_by_step: bool,
+    continue_on_error: bool,
 }
 
 async fn run_parallel(
@@ -417,6 +424,7 @@ async fn run_parallel(
         shutdown_timeout,
         verbose,
         step_by_step,
+        continue_on_error,
     }: RunConfig,
 ) -> Result<()> {
     let mut create_databases = BTreeMap::new();
@@ -469,6 +477,7 @@ async fn run_parallel(
                         shutdown_timeout,
                         verbose,
                         step_by_step,
+                        continue_on_error,
                     )
                     .await
                 }))
@@ -568,6 +577,7 @@ async fn run_serial(
         shutdown_timeout,
         verbose,
         step_by_step,
+        continue_on_error,
     }: RunConfig,
 ) -> Result<()> {
     let mut failed_cases = vec![];
@@ -586,6 +596,7 @@ async fn run_serial(
             shutdown_timeout,
             verbose,
             step_by_step,
+            continue_on_error,
         )
         .await;
         stdout().flush()?;
@@ -736,6 +747,7 @@ async fn connect_and_run_test_file(
     shutdown_timeout: Option<Duration>,
     verbose: bool,
     step_by_step: bool,
+    continue_on_error: bool,
 ) -> RunResult {
     struct OutputGuard<O: Output>(O);
     impl<O: Output> Drop for OutputGuard<O> {
@@ -788,7 +800,7 @@ async fn connect_and_run_test_file(
             .unwrap();
             RunResult::Cancelled
         }
-        result = run_test_file(&mut out.0, &mut runner, filename.clone(), verbose, step_by_step) => {
+        result = run_test_file(&mut out.0, &mut runner, filename.clone(), verbose, step_by_step, continue_on_error) => {
             if let Err(err) = &result {
                 writeln!(
                     out.0,
@@ -830,6 +842,7 @@ async fn run_test_file<T: io::Write, M: MakeConnection>(
     filename: impl AsRef<Path>,
     verbose: bool,
     step_by_step: bool,
+    continue_on_error: bool,
 ) -> Result<Duration> {
     let filename = filename.as_ref();
 
@@ -844,12 +857,15 @@ async fn run_test_file<T: io::Write, M: MakeConnection>(
 
     begin_times.push(Instant::now());
 
+    let mut is_first_error = false;
+    let mut err = None;
+
     for record in records {
         if let Record::Halt { .. } = record {
             break;
         }
 
-                // Show step-by-step information before executing the record
+        // Show step-by-step information before executing the record
         if step_by_step {
             match &record {
                 Record::Statement { sql, connection, .. } | Record::Query { sql, connection, .. } => {
@@ -897,14 +913,26 @@ async fn run_test_file<T: io::Write, M: MakeConnection>(
             _ => {}
         }
 
-        let record_output = runner
-            .run_async(record.clone())
-            .await
-            .map_err(|e| anyhow!("{}", e.display(console::colors_enabled(), verbose)))
-            .context(format!(
-                "failed to run `{}`",
-                style(filename.to_string_lossy()).bold()
-            ))?;
+        let record_output = match runner.run_async(record.clone()).await {
+            Ok(output) => output,
+            Err(e) => {
+                if continue_on_error {
+                    // Log the error but continue
+                    eprintln!("Error (continuing): {}", e);
+                    if !is_first_error {
+                        err = Some(e);
+                        is_first_error = true;
+                    }
+                    continue;
+                } else {
+                    return Err(anyhow!("{}", e.display(console::colors_enabled(), verbose)))
+                        .context(format!(
+                            "failed to run `{}`",
+                            style(filename.to_string_lossy()).bold()
+                        ));
+                }
+            }
+        };
 
         // Show step-by-step output information after executing the record
         if step_by_step && verbose {
@@ -939,6 +967,15 @@ async fn run_test_file<T: io::Write, M: MakeConnection>(
     )?;
 
     writeln!(out)?;
+
+    // only return error if there is an error, and only return the first error
+    if let Some(err) = err {
+        return Err(anyhow!("{}", err.display(console::colors_enabled(), verbose)))
+            .context(format!(
+                "failed to run `{}`",
+                style(filename.to_string_lossy()).bold()
+            ));
+    }
 
     Ok(duration)
 }
