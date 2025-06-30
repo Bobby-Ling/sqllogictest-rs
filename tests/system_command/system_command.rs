@@ -44,7 +44,7 @@ fn test() {
     let mut tester = sqllogictest::Runner::new(|| async { Ok(FakeDB) });
 
     if let Err(e) = tester.run_file("./system_command/system_command.slt") {
-        println!("{}", e.display(true));
+        println!("{}", e.display(true, false));
         panic!();
     }
 }
