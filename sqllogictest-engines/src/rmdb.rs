@@ -180,7 +180,7 @@ impl sqllogictest::AsyncDB for Rmdb {
         let response = self.send_command(sql).await?;
 
         // 如果响应包含错误信息
-        if response.contains("error") || response.to_lowercase().contains("failed") {
+        if response.contains("Error:") || response == "failure" {
             return Err(RmdbError::SqlError(response));
         }
 
