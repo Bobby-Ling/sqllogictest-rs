@@ -849,11 +849,17 @@ async fn run_test_file<T: io::Write, M: MakeConnection>(
             break;
         }
 
-        // Show step-by-step information before executing the record
+                // Show step-by-step information before executing the record
         if step_by_step {
             match &record {
-                Record::Statement { sql, .. } | Record::Query { sql, .. }=> {
-                    println!("\n{} {}", style("About to execute statement:").yellow(), style(sql).bold());
+                Record::Statement { sql, connection, .. } | Record::Query { sql, connection, .. } => {
+                    // Show verbose connection info if verbose is enabled
+                    if verbose {
+                        print!("{} {} ", style("Connection:").blue(), style(format!("{:?}", connection)).dim());
+                    }
+
+                    println!("{} {}", style("About to execute:").yellow(), style(sql).bold());
+
                     println!("{}", style("Press Enter to continue or 'q' + Enter to quit...").dim());
 
                     let mut input = String::new();
@@ -891,14 +897,36 @@ async fn run_test_file<T: io::Write, M: MakeConnection>(
             _ => {}
         }
 
-        runner
-            .run_async(record)
+        let record_output = runner
+            .run_async(record.clone())
             .await
             .map_err(|e| anyhow!("{}", e.display(console::colors_enabled(), verbose)))
             .context(format!(
                 "failed to run `{}`",
                 style(filename.to_string_lossy()).bold()
             ))?;
+
+        // Show step-by-step output information after executing the record
+        if step_by_step && verbose {
+            match &record_output {
+                sqllogictest::RecordOutput::Query { types: _, rows, error } => {
+                    if let Some(error) = error {
+                        println!("{} {}", style("Error:").red(), style(error).dim());
+                    } else {
+                        println!("=== {} {} rows ===", style("Result:").green(), rows.len());
+                        if !rows.is_empty() {
+                            for (i, row) in rows.iter().enumerate() {
+                                println!("  {}: {:?}", i + 1, row);
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Handle any other non-exhaustive variants
+                }
+            }
+            println!();
+        }
     }
 
     let duration = begin_times[0].elapsed();
