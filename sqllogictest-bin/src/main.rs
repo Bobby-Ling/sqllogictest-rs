@@ -137,6 +137,10 @@ struct Opt {
     /// test file is finished. By default, this is unspecified, meaning to wait forever.
     #[clap(long = "shutdown-timeout", env = "SLT_SHUTDOWN_TIMEOUT")]
     shutdown_timeout_secs: Option<u64>,
+
+    /// Enable verbose output, which shows expected and actual output text in addition to diff.
+    #[clap(long, short)]
+    verbose: bool,
 }
 
 /// Connection configuration.
@@ -247,6 +251,7 @@ pub async fn main() -> Result<()> {
         partition_count,
         partition_id,
         shutdown_timeout_secs,
+        verbose,
     } = Opt::from_arg_matches(&matches)
         .map_err(|err| err.exit())
         .unwrap();
@@ -354,6 +359,7 @@ pub async fn main() -> Result<()> {
         fail_fast,
         cancel,
         shutdown_timeout: shutdown_timeout_secs.map(Duration::from_secs),
+        verbose,
     };
 
     let result = if let Some(jobs) = jobs {
@@ -386,6 +392,7 @@ struct RunConfig {
     fail_fast: bool,
     cancel: CancellationToken,
     shutdown_timeout: Option<Duration>,
+    verbose: bool,
 }
 
 async fn run_parallel(
@@ -401,6 +408,7 @@ async fn run_parallel(
         fail_fast,
         cancel,
         shutdown_timeout,
+        verbose,
     }: RunConfig,
 ) -> Result<()> {
     let mut create_databases = BTreeMap::new();
@@ -451,6 +459,7 @@ async fn run_parallel(
                         &labels,
                         cancel,
                         shutdown_timeout,
+                        verbose,
                     )
                     .await
                 }))
@@ -548,6 +557,7 @@ async fn run_serial(
         fail_fast,
         cancel,
         shutdown_timeout,
+        verbose,
     }: RunConfig,
 ) -> Result<()> {
     let mut failed_cases = vec![];
@@ -564,6 +574,7 @@ async fn run_serial(
             &labels,
             cancel.clone(),
             shutdown_timeout,
+            verbose,
         )
         .await;
         stdout().flush()?;
@@ -712,6 +723,7 @@ async fn connect_and_run_test_file(
     labels: &[String],
     cancel: CancellationToken,
     shutdown_timeout: Option<Duration>,
+    verbose: bool,
 ) -> RunResult {
     struct OutputGuard<O: Output>(O);
     impl<O: Output> Drop for OutputGuard<O> {
@@ -746,6 +758,7 @@ async fn connect_and_run_test_file(
         runner.add_label(label);
     }
     runner.set_var(well_known::DATABASE.to_owned(), config.db.clone());
+    runner.with_verbose(verbose);
 
     let begin = Instant::now();
 
@@ -763,7 +776,7 @@ async fn connect_and_run_test_file(
             .unwrap();
             RunResult::Cancelled
         }
-        result = run_test_file(&mut out.0, &mut runner, filename.clone()) => {
+        result = run_test_file(&mut out.0, &mut runner, filename.clone(), verbose) => {
             if let Err(err) = &result {
                 writeln!(
                     out.0,
@@ -803,6 +816,7 @@ async fn run_test_file<T: io::Write, M: MakeConnection>(
     out: &mut T,
     runner: &mut Runner<M::Conn, M>,
     filename: impl AsRef<Path>,
+    verbose: bool,
 ) -> Result<Duration> {
     let filename = filename.as_ref();
 
@@ -847,7 +861,7 @@ async fn run_test_file<T: io::Write, M: MakeConnection>(
         runner
             .run_async(record)
             .await
-            .map_err(|e| anyhow!("{}", e.display(console::colors_enabled())))
+            .map_err(|e| anyhow!("{}", e.display(console::colors_enabled(), verbose)))
             .context(format!(
                 "failed to run `{}`",
                 style(filename.to_string_lossy()).bold()

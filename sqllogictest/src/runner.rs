@@ -152,10 +152,11 @@ pub struct TestError {
 }
 
 impl TestError {
-    pub fn display(&self, colorize: bool) -> TestErrorDisplay<'_> {
+    pub fn display(&self, colorize: bool, verbose: bool) -> TestErrorDisplay<'_> {
         TestErrorDisplay {
             err: self,
             colorize,
+            verbose: verbose,
         }
     }
 }
@@ -164,6 +165,7 @@ impl TestError {
 pub struct TestErrorDisplay<'a> {
     err: &'a TestError,
     colorize: bool,
+    verbose: bool,
 }
 
 impl Display for TestErrorDisplay<'_> {
@@ -171,7 +173,7 @@ impl Display for TestErrorDisplay<'_> {
         write!(
             f,
             "{}\nat {}\n",
-            self.err.kind.display(self.colorize),
+            self.err.kind.display(self.colorize, self.verbose),
             self.err.loc
         )
     }
@@ -199,6 +201,7 @@ impl Display for ParallelTestError {
 pub struct ParallelTestErrorDisplay<'a> {
     err: &'a ParallelTestError,
     colorize: bool,
+    verbose: bool,
 }
 
 impl Display for ParallelTestErrorDisplay<'_> {
@@ -206,17 +209,18 @@ impl Display for ParallelTestErrorDisplay<'_> {
         writeln!(f, "parallel test failed")?;
         write!(f, "Caused by:")?;
         for i in &self.err.errors {
-            writeln!(f, "{}", i.display(self.colorize))?;
+            writeln!(f, "{}", i.display(self.colorize, self.verbose))?;
         }
         Ok(())
     }
 }
 
 impl ParallelTestError {
-    pub fn display(&self, colorize: bool) -> ParallelTestErrorDisplay<'_> {
+    pub fn display(&self, colorize: bool, verbose: bool) -> ParallelTestErrorDisplay<'_> {
         ParallelTestErrorDisplay {
             err: self,
             colorize,
+            verbose: verbose,
         }
     }
 }
@@ -330,10 +334,11 @@ impl TestErrorKind {
         TestError { kind: self, loc }
     }
 
-    pub fn display(&self, colorize: bool) -> TestErrorKindDisplay<'_> {
+    pub fn display(&self, colorize: bool, verbose: bool) -> TestErrorKindDisplay<'_> {
         TestErrorKindDisplay {
             error: self,
             colorize,
+            verbose: verbose
         }
     }
 }
@@ -342,6 +347,7 @@ impl TestErrorKind {
 pub struct TestErrorKindDisplay<'a> {
     error: &'a TestErrorKind,
     colorize: bool,
+    verbose: bool,
 }
 
 impl Display for TestErrorKindDisplay<'_> {
@@ -365,15 +371,29 @@ impl Display for TestErrorKindDisplay<'_> {
                 sql,
                 expected,
                 actual,
-            } => write!(
-                f,
-                "query result mismatch:\n[SQL] {sql}\n[Diff] ({}|{})\n{}",
-                "-expected".bright_red(),
-                "+actual".bright_green(),
-                TextDiff::from_lines(expected, actual)
-                    .iter_all_changes()
-                    .format_with("\n", |diff, f| format_diff(&diff, f, true))
-            ),
+            } => {
+                if self.verbose {
+                    write!(
+                        f,
+                        "query result mismatch:\n[SQL] {sql}\n[Expected]\n{expected}\n[Actual]\n{actual}\n[Diff] ({}|{})\n{}",
+                        "-expected".bright_red(),
+                        "+actual".bright_green(),
+                        TextDiff::from_lines(expected, actual)
+                            .iter_all_changes()
+                            .format_with("\n", |diff, f| format_diff(&diff, f, true))
+                    )
+                } else {
+                    write!(
+                        f,
+                        "query result mismatch:\n[SQL] {sql}\n[Diff] ({}|{})\n{}",
+                        "-expected".bright_red(),
+                        "+actual".bright_green(),
+                        TextDiff::from_lines(expected, actual)
+                            .iter_all_changes()
+                            .format_with("\n", |diff, f| format_diff(&diff, f, true))
+                    )
+                }
+            },
             TestErrorKind::QueryResultColumnsMismatch {
                 sql,
                 expected,
@@ -654,6 +674,8 @@ pub struct Runner<D: AsyncDB, M: MakeConnection<Conn = D>> {
     locals: RunnerLocals,
     /// Whether to continue running after statement failures
     continue_on_error: bool,
+    /// Whether to use verbose error output
+    verbose: bool,
 }
 
 impl<D: AsyncDB, M: MakeConnection<Conn = D>> Runner<D, M> {
@@ -674,6 +696,7 @@ impl<D: AsyncDB, M: MakeConnection<Conn = D>> Runner<D, M> {
             conn: Connections::new(make_conn),
             locals: RunnerLocals::default(),
             continue_on_error: true,
+            verbose: true,
         }
     }
 
@@ -712,6 +735,11 @@ impl<D: AsyncDB, M: MakeConnection<Conn = D>> Runner<D, M> {
     /// Set whether to continue running after statement failures
     pub fn with_continue_on_error(&mut self, continue_on_error: bool) {
         self.continue_on_error = continue_on_error;
+    }
+
+    /// Set whether to use verbose error output
+    pub fn with_verbose(&mut self, verbose: bool) {
+        self.verbose = verbose;
     }
 
     pub async fn apply_record(
@@ -1433,6 +1461,7 @@ impl<D: AsyncDB, M: MakeConnection<Conn = D>> Runner<D, M> {
                 labels: self.labels.clone(),
                 locals,
                 continue_on_error: self.continue_on_error,
+                verbose: self.verbose,
             };
 
             tasks.push(async move {
