@@ -141,6 +141,10 @@ struct Opt {
     /// Enable verbose output, which shows expected and actual output text in addition to diff.
     #[clap(long, short)]
     verbose: bool,
+
+    /// Enable step-by-step execution of SQL records. Pauses before each record for user confirmation.
+    #[clap(long = "step-by-step", short)]
+    step_by_step: bool,
 }
 
 /// Connection configuration.
@@ -252,6 +256,7 @@ pub async fn main() -> Result<()> {
         partition_id,
         shutdown_timeout_secs,
         verbose,
+        step_by_step,
     } = Opt::from_arg_matches(&matches)
         .map_err(|err| err.exit())
         .unwrap();
@@ -360,6 +365,7 @@ pub async fn main() -> Result<()> {
         cancel,
         shutdown_timeout: shutdown_timeout_secs.map(Duration::from_secs),
         verbose,
+        step_by_step,
     };
 
     let result = if let Some(jobs) = jobs {
@@ -393,6 +399,7 @@ struct RunConfig {
     cancel: CancellationToken,
     shutdown_timeout: Option<Duration>,
     verbose: bool,
+    step_by_step: bool,
 }
 
 async fn run_parallel(
@@ -409,6 +416,7 @@ async fn run_parallel(
         cancel,
         shutdown_timeout,
         verbose,
+        step_by_step,
     }: RunConfig,
 ) -> Result<()> {
     let mut create_databases = BTreeMap::new();
@@ -460,6 +468,7 @@ async fn run_parallel(
                         cancel,
                         shutdown_timeout,
                         verbose,
+                        step_by_step,
                     )
                     .await
                 }))
@@ -558,6 +567,7 @@ async fn run_serial(
         cancel,
         shutdown_timeout,
         verbose,
+        step_by_step,
     }: RunConfig,
 ) -> Result<()> {
     let mut failed_cases = vec![];
@@ -575,6 +585,7 @@ async fn run_serial(
             cancel.clone(),
             shutdown_timeout,
             verbose,
+            step_by_step,
         )
         .await;
         stdout().flush()?;
@@ -724,6 +735,7 @@ async fn connect_and_run_test_file(
     cancel: CancellationToken,
     shutdown_timeout: Option<Duration>,
     verbose: bool,
+    step_by_step: bool,
 ) -> RunResult {
     struct OutputGuard<O: Output>(O);
     impl<O: Output> Drop for OutputGuard<O> {
@@ -776,7 +788,7 @@ async fn connect_and_run_test_file(
             .unwrap();
             RunResult::Cancelled
         }
-        result = run_test_file(&mut out.0, &mut runner, filename.clone(), verbose) => {
+        result = run_test_file(&mut out.0, &mut runner, filename.clone(), verbose, step_by_step) => {
             if let Err(err) = &result {
                 writeln!(
                     out.0,
@@ -817,6 +829,7 @@ async fn run_test_file<T: io::Write, M: MakeConnection>(
     runner: &mut Runner<M::Conn, M>,
     filename: impl AsRef<Path>,
     verbose: bool,
+    step_by_step: bool,
 ) -> Result<Duration> {
     let filename = filename.as_ref();
 
@@ -835,6 +848,26 @@ async fn run_test_file<T: io::Write, M: MakeConnection>(
         if let Record::Halt { .. } = record {
             break;
         }
+
+        // Show step-by-step information before executing the record
+        if step_by_step {
+            match &record {
+                Record::Statement { sql, .. } | Record::Query { sql, .. }=> {
+                    println!("\n{} {}", style("About to execute statement:").yellow(), style(sql).bold());
+                    println!("{}", style("Press Enter to continue or 'q' + Enter to quit...").dim());
+
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    if input.trim() == "q" {
+                        break;
+                    }
+                }
+                _ => {
+                    // For other record types, don't pause
+                }
+            }
+        }
+
         match &record {
             Record::Injected(Injected::BeginInclude(file)) => {
                 begin_times.push(Instant::now());
