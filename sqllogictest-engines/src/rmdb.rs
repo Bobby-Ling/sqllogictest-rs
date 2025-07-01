@@ -99,15 +99,7 @@ impl Rmdb {
             )));
         }
 
-        let mut data = String::from_utf8_lossy(&buffer[..n]).to_string();
-
-        // 处理abort情况
-        while data.contains("abort") {
-            println!("[Server] {}", data);
-            self.stream.write_all(command.as_bytes()).await?;
-            let n = self.stream.read(&mut buffer).await?;
-            data = String::from_utf8_lossy(&buffer[..n]).to_string();
-        }
+        let data = String::from_utf8_lossy(&buffer[..n]).to_string();
 
         Ok(data)
     }
