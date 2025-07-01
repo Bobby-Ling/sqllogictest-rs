@@ -19,8 +19,7 @@ use rand::distributions::DistString;
 use rand::seq::SliceRandom;
 use sqllogictest::substitution::well_known;
 use sqllogictest::{
-    default_column_validator, default_normalizer, default_validator, update_record_with_output,
-    AsyncDB, Injected, MakeConnection, Partitioner, Record, Runner,
+    default_column_validator, default_normalizer, default_validator, update_record_with_output, AsyncDB, Connection, Injected, MakeConnection, Partitioner, Record, Runner
 };
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
@@ -865,24 +864,32 @@ async fn run_test_file<T: io::Write, M: MakeConnection>(
             break;
         }
 
+        let step_by_step_handler = |sql_or_command: &str, connection: &Connection| -> Result<()> {
+            // Show verbose connection info if verbose is enabled
+            if verbose {
+                print!("{} {} ", style("Connection:").blue(), style(format!("{:?}", connection)).dim());
+            }
+
+            println!("{} {}", style("About to execute:").yellow(), style(sql_or_command).bold());
+
+            println!("{}", style("Press Enter to continue or 'q' + Enter to quit...").dim());
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            if input.trim() == "q" {
+                return Err(anyhow!("User requested to quit"));
+            }
+            Ok(())
+        };
+
         // Show step-by-step information before executing the record
         if step_by_step {
             match &record {
                 Record::Statement { sql, connection, .. } | Record::Query { sql, connection, .. } => {
-                    // Show verbose connection info if verbose is enabled
-                    if verbose {
-                        print!("{} {} ", style("Connection:").blue(), style(format!("{:?}", connection)).dim());
-                    }
-
-                    println!("{} {}", style("About to execute:").yellow(), style(sql).bold());
-
-                    println!("{}", style("Press Enter to continue or 'q' + Enter to quit...").dim());
-
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input)?;
-                    if input.trim() == "q" {
-                        break;
-                    }
+                    step_by_step_handler(sql, connection)?;
+                }
+                Record::System { command, .. } => {
+                    step_by_step_handler(command, &Connection::Default)?;
                 }
                 _ => {
                     // For other record types, don't pause
