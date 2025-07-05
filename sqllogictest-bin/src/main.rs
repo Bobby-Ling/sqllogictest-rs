@@ -19,7 +19,7 @@ use rand::distributions::DistString;
 use rand::seq::SliceRandom;
 use sqllogictest::substitution::well_known;
 use sqllogictest::{
-    default_column_validator, default_normalizer, default_validator, update_record_with_output, AsyncDB, Connection, Injected, MakeConnection, Partitioner, Record, Runner
+    default_column_validator, default_normalizer, default_validator, parse, update_record_with_output, AsyncDB, Connection, DBOutput, Injected, Location, MakeConnection, Partitioner, Record, RecordOutput, Runner, StatementExpect
 };
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
@@ -864,7 +864,7 @@ async fn run_test_file<T: io::Write, M: MakeConnection>(
             break;
         }
 
-        let step_by_step_handler = |sql_or_command: &str, connection: &Connection| -> Result<()> {
+        let step_by_step_handler = async move |sql_or_command: &str, connection: &Connection, runner: &mut Runner<M::Conn, M>| -> Result<()> {
             // Show verbose connection info if verbose is enabled
             if verbose {
                 print!("{} {} ", style("Connection:").blue(), style(format!("{:?}", connection)).dim());
@@ -872,12 +872,63 @@ async fn run_test_file<T: io::Write, M: MakeConnection>(
 
             println!("{} {}", style("About to execute:").yellow(), style(sql_or_command).bold());
 
-            println!("{}", style("Press Enter to continue or 'q' + Enter to quit...").dim());
+            println!("{}", style("Press Enter to continue, 'q' + Enter to quit, or type SQL to execute...").dim());
 
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
-            if input.trim() == "q" {
+            let input = input.trim();
+
+            if input == "q" {
                 return Err(anyhow!("User requested to quit"));
+                                    } else if !input.is_empty() {
+                // User entered SQL, execute it
+                println!("{} {}", style("Executing user SQL:").cyan(), style(input).bold());
+
+                // Create a simple SQL record and execute it
+                let sql_record = format!("statement ok\n{}", input);
+                match sqllogictest::parse::<<<M as MakeConnection>::Conn as AsyncDB>::ColumnType>(&sql_record) {
+                    Ok(mut records) => {
+                        if let Some(record) = records.pop() {
+                            match runner.run_async(record).await {
+                                Ok(output) => {
+                                    match output {
+                                        RecordOutput::Query { types: _, rows, error } => {
+                                            if let Some(error) = error {
+                                                println!("{} {}", style("Error:").red(), style(error).dim());
+                                            } else {
+                                                println!("=== {} {} rows ===", style("Result:").green(), rows.len());
+                                                if !rows.is_empty() {
+                                                    for (i, row) in rows.iter().enumerate() {
+                                                        println!("  {}: {:?}", i + 1, row);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        RecordOutput::Statement { count, error } => {
+                                            if let Some(error) = error {
+                                                println!("{} {}", style("Error:").red(), style(error).dim());
+                                            } else {
+                                                println!("{} {}", style("Statement completed:").green(), style(format!("affected {} rows", count)).dim());
+                                            }
+                                        }
+                                        _ => {
+                                            println!("{}", style("No output").dim());
+                                        }
+                                    }
+                                    println!();
+                                }
+                                Err(e) => {
+                                    println!("{} {}", style("Error:").red(), style(e.display(console::colors_enabled(), verbose)).dim());
+                                    println!();
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("{} {}", style("Parse Error:").red(), style(e).dim());
+                        println!();
+                    }
+                }
             }
             Ok(())
         };
@@ -886,10 +937,10 @@ async fn run_test_file<T: io::Write, M: MakeConnection>(
         if step_by_step {
             match &record {
                 Record::Statement { sql, connection, .. } | Record::Query { sql, connection, .. } => {
-                    step_by_step_handler(sql, connection)?;
+                    step_by_step_handler(sql, connection, runner).await?;
                 }
                 Record::System { command, .. } => {
-                    step_by_step_handler(command, &Connection::Default)?;
+                    step_by_step_handler(command, &Connection::Default, runner).await?;
                 }
                 _ => {
                     // For other record types, don't pause
